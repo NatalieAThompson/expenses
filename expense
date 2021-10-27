@@ -1,0 +1,149 @@
+#! /usr/bin/env ruby
+
+require "pg"
+require "io/console"
+
+class Cli
+  # COMMANDS = %w(list add search delete clear)
+  def initialize
+    @expenses = Expenses.new
+  end
+
+  def run(arguments)
+    @command = arguments[0]
+    @arguments = arguments[1..-1]
+
+    command
+  end
+
+  private
+
+  def command
+    if @command.nil?
+      puts @expenses
+    elsif (@command == "list")
+      @expenses.list
+    elsif (@command == "add")
+      @expenses.add(@arguments)
+    elsif (@command == "search")
+      @expenses.search(@arguments[0])
+    elsif (@command == "delete")
+      @expenses.delete(@arguments[0])
+    elsif (@command == "clear")
+      @expenses.clear
+    end
+  end
+end
+
+class Expenses
+  def initialize
+    @db = PG.connect(dbname: "ls185")
+    setup_schema
+  end
+
+  def setup_schema
+    result = @db.exec("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' and table_name = 'expenses';")
+    if result.values.flatten[0].to_i == 0
+      schema = File.read("schema.sql")
+      @db.exec(schema)
+    end
+  end
+
+  def list
+    expenses = select_all
+    display_results(expenses)
+  end
+
+  def add(*data)
+    data = data[0]
+    if data.length > 3 || data.length < 2
+      puts "Please format your add input properly: add AMOUNT MEMO [DATE]"
+      return
+    end
+
+    if data.length == 2
+      @db.exec_params("INSERT INTO expenses (amount, memo) VALUES ($1, $2);", [data[0], data[1]])
+    else
+      @db.exec_params("INSERT INTO expenses (amount, memo, created_on) VALUES ($1, $2, $3);", [data[0], data[1], data[2]])
+    end
+  end
+
+  def display_results(results)
+    if results.ntuples == 0
+      puts "There are no expenses."
+    else
+      format_items(results)
+      puts "\n".rjust(51, '-')
+      puts "Total".ljust(25, ' ') + sum(results)
+    end
+  end
+
+  def search(term)
+    results = @db.exec_params("SELECT * FROM expenses WHERE memo ILIKE $1", [term])
+    display_results(results)
+  end
+
+  def delete(index)
+    results = select_all
+    if results.column_values(0).include?(index)
+      selected = @db.exec_params("SELECT * FROM expenses WHERE id = $1", [index])
+      @db.exec_params("DELETE FROM expenses WHERE id = $1", [index])
+
+      puts "The following expense has been deleted:"
+      format_items(selected)
+    else
+      puts "There is no expense with the id '#{index}'."
+    end
+  end
+
+  def clear
+    if confirmation?
+      @db.exec("DELETE FROM expenses;")
+      puts "All expenses have been deleted."
+    end
+  end
+
+  def to_s
+    "An expense recording system\n" +
+    "\n" +
+    "Commands:\n" +
+    "\n" +
+    "add AMOUNT MEMO [DATE] - record a new expense\n" +
+    "clear - delete all expenses\n" +
+    "list - list all expenses\n" +
+    "delete NUMBER - remove expense with id NUMBER\n" +
+    "search QUERY - list expenses with a matching memo field"
+  end
+
+  private
+
+  def format_items(values)
+    values.each_row do |row|
+      puts "#{row[0]} | #{row[3]} |" + row[1].to_s.rjust(13, ' ') + " | #{row[2]}"
+    end
+  end
+
+  def select_all
+    @db.exec("SELECT * FROM expenses ORDER BY created_on;")
+  end
+
+  def confirmation?
+    answer = nil
+    puts "This will remove all expenses. Are you sure? (y/n)"
+
+    until ['Y', 'y', 'N', 'n'].include?(answer)
+      answer = $stdin.getch
+    end
+
+    answer == 'Y' || answer == 'y' ? true : false
+  end
+
+  def sum(results)
+    "%.02f" % results.column_values(1).map(&:to_f).sum.to_s
+  end
+
+end
+
+cli = Cli.new
+cli.run(ARGV)
+
